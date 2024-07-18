@@ -27,7 +27,7 @@ setup(
         # List your dependencies here
         'numpy',
         'pandas',
-        'sklearn',
+        'scikit-learn',
         'torch',
         'uvicorn',
         'fastapi',
