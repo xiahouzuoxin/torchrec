@@ -501,11 +501,6 @@ class DataFrameDataset(Dataset):
                 continue
 
             max_len = max([len(f[col]) for f in features])
-            min_len = min([len(f[col]) for f in features])
-            if max_len == min_len:
-                # already padded
-                continue
-
             max_len = min([list_padding_maxlen, max_len]) if list_padding_maxlen else max_len
             padding_value = list_padding_value
             if padding_value is None:
