@@ -415,9 +415,19 @@ class DataFrameDataset(Dataset):
         # features.update({f'{k}': v[idx,:] for k,v in self.seq_sparse_data.items()})
         # features.update({f'{k}': v[idx,:] for k,v in self.weight_data.items()})
         for k,v in self.seq_sparse_data.items():
-            features[f'{k}'] = v[idx,:] if isinstance(v, torch.Tensor) else v[idx]
+            if isinstance(v, torch.Tensor):
+                features[f'{k}'] = v[idx,:]
+            elif isinstance(v, pd.Series):
+                features[f'{k}'] = v.iloc[idx]
+            else:
+                features[f'{k}'] = v[idx]
         for k,v in self.weight_data.items():
-            features[f'{k}'] = v[idx,:] if isinstance(v, torch.Tensor) else v[idx]
+            if isinstance(v, torch.Tensor):
+                features[f'{k}'] = v[idx,:]
+            elif isinstance(v, pd.Series):
+                features[f'{k}'] = v.iloc[idx]
+            else:
+                features[f'{k}'] = v[idx]
 
         if hasattr(self, 'target'):
             return features, self.target[idx,:]
@@ -464,10 +474,12 @@ class DataFrameDataset(Dataset):
             else:
                 # Return raw sequences without padding
                 # This should be padded in collate_fn when using DataLoader
-                self.seq_sparse_data[col] = list( df[col] )
+                # self.seq_sparse_data[col] = list( df[col] )
+                self.seq_sparse_data[col] = df[col].map(np.array).reset_index(drop=True)
                 if col in self.weight_cols_mapping:
                     weight_col = self.weight_cols_mapping[col]
-                    self.weight_data[f'{col}_wgt'] = list( df[weight_col] )
+                    # self.weight_data[f'{col}_wgt'] = list( df[weight_col] )
+                    self.weight_data[f'{col}_wgt'] = df[weight_col].map(np.array).reset_index(drop=True)
 
         if self.target_cols is not None:
             self.target = torch.tensor(df[self.target_cols].values.tolist(), dtype=torch.float32)
@@ -506,12 +518,14 @@ class DataFrameDataset(Dataset):
             if padding_value is None:
                 raise ValueError(f'`padding` should be provided for sequence feature {col}, you can set it in the feature configs or dataset initialization or collate_fn')
 
-            # padding for sequences
+            # TODO: speedup by Dask
             for k, f in enumerate(features):
-                updated_f = f[col] + [padding_value] * (max_len - len(f[col])) if len(f[col]) < max_len else f[col][:max_len]
+                # updated_f = f[col] + [padding_value] * (max_len - len(f[col])) if len(f[col]) < max_len else f[col][:max_len]
+                updated_f = np.pad(f[col], (0, max_len - len(f[col])), 'constant', constant_values=padding_value) if len(f[col]) < max_len else f[col][:max_len]
                 features[k].update({col: torch.tensor(updated_f, dtype=torch.int)})
                 if col in feature_wgt_keys:
-                    updated_w = f[f'{col}_wgt'] + [0.] * (max_len - len(f[f'{col}_wgt'])) if len(f[f'{col}_wgt']) < max_len else f[f'{col}_wgt'][:max_len]
+                    # updated_w = f[f'{col}_wgt'] + [0.] * (max_len - len(f[f'{col}_wgt'])) if len(f[f'{col}_wgt']) < max_len else f[f'{col}_wgt'][:max_len]
+                    updated_w = np.pad(f[f'{col}_wgt'], (0, max_len - len(f[f'{col}_wgt'])), 'constant', constant_values=0.) if len(f[f'{col}_wgt']) < max_len else f[f'{col}_wgt'][:max_len]
                     features[k].update({f'{col}_wgt': torch.tensor(updated_w, dtype=torch.float)})
 
         # call the original collate_fn
