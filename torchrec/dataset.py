@@ -473,12 +473,12 @@ class DataFrameDataset(Dataset):
         self.seq_sparse_data = {}
         for col, cfg in self.seq_sparse_configs.items():
             # convert to np.array if it's list type
-            # if not isinstance(df[col].iloc[0], np.ndarray):
-            #     df[col] = df[col].map(np.array)
-            # if col in self.weight_cols_mapping:
-            #     weight_col = self.weight_cols_mapping[col]
-            #     if not isinstance(df[weight_col].iloc[0], np.ndarray):
-            #         df[weight_col] = df[weight_col].map(np.array)
+            if not isinstance(df[col].iloc[0], np.ndarray):
+                df[col] = df[col].map(np.array)
+            if col in self.weight_cols_mapping:
+                weight_col = self.weight_cols_mapping[col]
+                if not isinstance(df[weight_col].iloc[0], np.ndarray):
+                    df[weight_col] = df[weight_col].map(np.array)
 
             # return array of arrays
             self.seq_sparse_data[col] = df[col].to_numpy()
@@ -536,21 +536,6 @@ class DataFrameDataset(Dataset):
         # call the original collate_fn
         batch = list(zip(features, target)) if len(batch[0]) == 2 else features
         return torch.utils.data.dataloader.default_collate(batch)
-
-    def to(self, device):
-        if hasattr(self, 'dense_data'):
-            self.dense_data = self.dense_data.to(device)
-        if hasattr(self, 'seq_dense_data'):
-            self.seq_dense_data = self.seq_dense_data.to(device)
-
-        self.sparse_data = {k: v.to(device) for k,v in self.sparse_data.items()}
-        self.seq_sparse_data = {k: v.to(device) for k,v in self.seq_sparse_data.items()}
-        self.weight_data = {k: v.to(device) for k,v in self.weight_data.items()}
-
-        if hasattr(self, 'target'):
-            self.target = self.target.to(device)
-
-        return self
 
 class IterableDataFrameDataset(IterableDataset):
     '''
@@ -651,7 +636,3 @@ class IterableDataFrameDataset(IterableDataset):
             if hasattr(self, 'device'):
                 ds = ds.to(self.device)
             yield from ds
-
-    def to(self, device):
-        self.device = device
-        return self
