@@ -298,6 +298,15 @@ class FeatureTransformer:
         Process list features.
         """
         dtype = feat_config['dtype']
+
+        # if column is string type, split by comma, make sure no space between comma
+        if isinstance(s.iat[0], str):
+            if self.verbose:
+                print(f'Feature {feat_config["name"]} is a list feature but input string type, split it by comma...')
+            s = s.str.split(',')
+            if dtype == 'numerical':
+                s = s.map(lambda x: [float(v) for v in x if v])
+        
         max_len = feat_config.get('maxlen', self.list_padding_maxlen)
         if max_len:
             s = s.map(lambda x: x[:max_len] if isinstance(x, list) else x)
