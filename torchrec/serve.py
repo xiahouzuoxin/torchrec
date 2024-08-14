@@ -1,3 +1,4 @@
+import sys
 import argparse
 import numpy as np
 import pandas as pd
@@ -10,14 +11,13 @@ import uvicorn
 from .dataset import DataFrameDataset
 
 serving_models = {
-    # 'name': {'path': 'path/to/model', 'model': None}
+    # 'name': {'path': 'path/to/model', 'model': None, 'dep_paths': 'path/to/dependencies'}
 }
 
 class ServeModel:
-    def __init__(self, model):
+    def __init__(self, model: torch.nn.Module | str):
         '''
-        model: str or torch.nn.Module object.
-            The model should be saved by `torch.save(model, 'path/to/model')`, including both state_dict and model structure.
+        model: model object of torch.nn.Module or path to the model checkpoint
         '''
         if isinstance(model, str):
             self.model = torch.load(model)
@@ -32,7 +32,7 @@ class ServeModel:
 
     def predict(self, df):
         ds = self.ds_generator(df, self.feat_configs, target_cols=None, is_raw=True, is_train=False, n_jobs=1)
-        loader = torch.utils.data.DataLoader(ds, batch_size=len(df), shuffle=False, collate_fn=self.ds_generator.collate_fn)
+        loader = torch.utils.data.DataLoader(ds, batch_size=len(df), shuffle=False, collate_fn=ds.collate_fn)
         preds = []
         for batch in loader:
             pred = self.model(batch)
@@ -51,6 +51,8 @@ app = FastAPI()
 @app.on_event('startup')
 async def init_models():
     for name, model in serving_models.items():
+        if model.get('dep_paths', None):
+            sys.path.append(model['dep_paths'])
         serving_models[name]['model'] = ServeModel(model['path'])
         print(f'Model {name} loaded from {model["path"]} successfully')
 
@@ -116,8 +118,9 @@ if __name__ == '__main__':
     parser.add_argument('--name', type=str, required=True)
     parser.add_argument('--path', type=str, required=True)
     parser.add_argument('--port', type=int, default=8000)
+    parser.add_argument('--dep_paths', type=str, default=None, help='Comma separated list of dependencies paths, for example, model class definition')
     
     args = parser.parse_args()
-    serving_models[args.name] = {'path': args.path}
+    serving_models[args.name] = {'path': args.path, 'dep_paths': args.dep_paths}
 
     uvicorn.run(app, host='0.0.0.0', port=args.port)

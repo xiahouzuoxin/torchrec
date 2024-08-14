@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.utils import murmurhash3_32
 import torch
+import torch.utils
 from torch.utils.data import Dataset, IterableDataset
 from torch.nn.utils.rnn import pad_sequence
 from joblib import Parallel, delayed
@@ -372,20 +373,35 @@ class DataFrameDataset(Dataset):
                 ]
             target_cols: list of str, target columns
             is_raw: bool, whether the input DataFrame is raw data without feature transforming
-            kwargs: mainly for feature transforming parameters when is_raw=True
-                n_jobs: int, number of parallel jobs
-                list_padding_value: int, padding value for list features
-                category_force_hash: bool, whether to force hash all category features
-                category_upper_lower_sensitive: bool, whether category features are upper/lower case sensitive
-                numerical_update_stats: bool, whether to update mean, std, min, max for numerical features
-                outliers_category: list, outliers for category features
-                outliers_numerical: list, outliers for numerical features
+            kwargs: include 
+                - FeatureTransformer parameters when is_raw=True
+                    n_jobs: int, number of parallel jobs
+                    category_force_hash: bool, whether to force hash all category features
+                    category_upper_lower_sensitive: bool, whether category features are upper/lower case sensitive
+                    numerical_update_stats: bool, whether to update mean, std, min, max for numerical features
+                    outliers_category: list, outliers for category features
+                    outliers_numerical: list, outliers for numerical features
+                    verbose: bool, whether to print the processing details
+                - list padding parameters
+                    list_padding_value: int, padding value for list features, if not set, default to -100
+                    list_padding_maxlen: int, maximum length for padding list features, if not set, default to min(256, max_len)
+                    list_padding_in_collate_fn: bool, whether to padding in collate_fn, default to True
+
+        Example of using it in DataLoader:
+            ```python
+            from torch.utils.data import DataLoader
+            from torchrec import DataFrameDataset
+
+            ds = DataFrameDataset(df, feat_configs, target_cols, is_raw=True, n_jobs=8)
+            DataLoader(ds, collate_fn=ds.collate_fn, batch_size=32, shuffle=True)
+            ```
         """
         n_jobs = kwargs.get('n_jobs', 1) # os.cpu_count()
         verbose = kwargs.get('verbose', False)
 
-        self.list_padding_value = kwargs.get('list_padding_value', None)
-        self.list_padding_maxlen = kwargs.get('list_padding_maxlen', None)
+        self.list_padding_value = kwargs.get('list_padding_value', -100)
+        self.list_padding_maxlen = kwargs.get('list_padding_maxlen', 256)
+        self.list_padding_in_collate_fn = kwargs.get('list_padding_in_collate_fn', True) # whether to padding in collate_fn
         
         if is_raw:
             assert 'is_train' in kwargs, 'is_train parameter should be provided when is_raw=True'
@@ -396,8 +412,8 @@ class DataFrameDataset(Dataset):
                 category_force_hash=kwargs.get('category_force_hash', False),
                 category_upper_lower_sensitive=kwargs.get('category_upper_lower_sensitive', True),
                 numerical_update_stats=kwargs.get('numerical_update_stats', False),
-                list_padding_value=self.list_padding_value,
-                list_padding_maxlen=self.list_padding_maxlen,
+                list_padding_value=self.list_padding_value if not self.list_padding_in_collate_fn else None,
+                list_padding_maxlen=self.list_padding_maxlen if not self.list_padding_in_collate_fn else None,
                 outliers_category=kwargs.get('outliers_category', []),
                 outliers_numerical=kwargs.get('outliers_numerical', []),
                 verbose=verbose
@@ -428,11 +444,21 @@ class DataFrameDataset(Dataset):
 
         self.convert_to_numpy(df)
         # padding for sequences
-        if (not is_raw) and self.list_padding_value: # not padded in the transforming process
+        if not is_raw and not self.list_padding_in_collate_fn: # not padded in the transforming process and will not in the collate_fn
             for col in self.seq_sparse_cols:
-                self.seq_sparse_data[col] = pad_list(
-                    self.seq_sparse_data[col], self.list_padding_value, self.list_padding_maxlen
+                list_padding_value = self.seq_sparse_configs[col].get('padding_value', self.list_padding_value)
+                list_padding_maxlen = self.seq_sparse_configs[col].get('maxlen', self.list_padding_maxlen)
+                list_padding_maxlen = min(
+                    list_padding_maxlen,
+                    max([len(v) for v in self.seq_sparse_data[col]])
                 )
+                self.seq_sparse_data[col] = pad_list(
+                    self.seq_sparse_data[col], list_padding_value, list_padding_maxlen
+                )
+                if col in self.weight_cols_mapping:
+                    self.weight_data[f'{col}_wgt'] = pad_list(
+                        self.weight_data[f'{col}_wgt'], 0., list_padding_maxlen
+                    )
 
         if verbose:
             print(f'==> Finished dataset initialization, total samples: {self.total_samples}')
@@ -499,18 +525,18 @@ class DataFrameDataset(Dataset):
         if self.target_cols is not None:
             self.target = df[self.target_cols].to_numpy(dtype=np.float32)
 
-    @staticmethod
-    def collate_fn(batch, list_padding_maxlen=256, list_padding_value=-100):
+    def collate_fn(self, batch):
         """
         Collate function for DataFrameDataset.
         It mainly for padding sequences if not padded. If there aren't any sequences, it will call the default collate_fn.
         Args:
             batch: list of tuples, each tuple contains features and target
-            list_padding_maxlen: int, maximum length for padding list features
-            list_padding_value: int, padding value for list features
         Returns:
             batch: list of tensors, each tensor contains features and target
         """
+        if not self.list_padding_in_collate_fn:
+            return torch.utils.data.dataloader.default_collate(batch)
+
         if len(batch) == 0:
             return batch
         
@@ -519,130 +545,35 @@ class DataFrameDataset(Dataset):
         else:
             features = batch
 
-        # padding for sequences if not padded
-        feature_keys = [k for k in features[0].keys() if not k.endswith('_wgt')]
-        feature_wgt_keys = set( [k for k in features[0].keys() if k.endswith('_wgt')] )
+        batch_feat_keys = set( [k for k in features[0].keys()] )
 
-        for col in feature_keys:
-            if col in ('dense_features', 'seq_dense_features'):
-                continue
+        # padding for sequences if not padded
+        # TODO: how to speed up this process?
+        for col in self.seq_sparse_cols:
+            wgt_col = f'{col}_wgt'
+
+            list_padding_maxlen = self.seq_sparse_configs[col].get('maxlen', self.list_padding_maxlen)
+            list_padding_value = self.seq_sparse_configs[col].get('padding_value', self.list_padding_value)
+
             max_len = max([len(f[col]) for f in features])
-            if max_len <= 1:  # maybe non-sequence sparse features or sequence features that length equal to 1 in all samples
+            if max_len <= 1:  # sequence features that length equal to 1 in all samples
                 continue
             max_len = min([list_padding_maxlen, max_len]) if list_padding_maxlen else max_len
-            if list_padding_value is None:
-                raise ValueError(f'`padding` should be provided for sequence feature {col}, you can set it in the feature configs or dataset initialization or collate_fn')
 
-            # TODO: speedup by Dask
+            # iterate over each sample
             for k, f in enumerate(features):
-                # updated_f = f[col] + [list_padding_value] * (max_len - len(f[col])) if len(f[col]) < max_len else f[col][:max_len]
                 updated_f = np.pad(f[col], (0, max_len - len(f[col])), 'constant', constant_values=list_padding_value) if len(f[col]) < max_len else f[col][:max_len]
                 features[k].update({col: torch.tensor(updated_f, dtype=torch.int)})
-                if col in feature_wgt_keys:
-                    # updated_w = f[f'{col}_wgt'] + [0.] * (max_len - len(f[f'{col}_wgt'])) if len(f[f'{col}_wgt']) < max_len else f[f'{col}_wgt'][:max_len]
-                    updated_w = np.pad(f[f'{col}_wgt'], (0, max_len - len(f[f'{col}_wgt'])), 'constant', constant_values=0.) if len(f[f'{col}_wgt']) < max_len else f[f'{col}_wgt'][:max_len]
-                    features[k].update({f'{col}_wgt': torch.tensor(updated_w, dtype=torch.float)})
+                if wgt_col in batch_feat_keys:
+                    updated_w = np.pad(f[wgt_col], (0, max_len - len(f[wgt_col])), 'constant', constant_values=0.) if len(f[f'{col}_wgt']) < max_len else f[f'{col}_wgt'][:max_len]
+                    features[k].update({wgt_col: torch.tensor(updated_w, dtype=torch.float)})
 
         # call the original collate_fn
         batch = list(zip(features, target)) if len(batch[0]) == 2 else features
         return torch.utils.data.dataloader.default_collate(batch)
 
-class IterableDataFrameDataset(IterableDataset):
+def get_dataloader(ds: DataFrameDataset, **kwargs):
     '''
-    Var-length supported pytorch iterable dataset for DataFrame.
+    Get DataLoader from DataFrameDataset.
     '''
-    def __init__(self, inputs, feat_configs, target_cols=None, is_raw=False, chunksize=None, **kwargs):
-        """
-        Args:
-            inputs: list of str, input files
-            feat_configs: list of dict, feature configurations. for example, 
-                [
-                    {'name': 'a', 'dtype': 'numerical', 'norm': 'std'},   # 'norm' in ['std','[0,1]']
-                    {'name': 'a', 'dtype': 'numerical', 'hash_buckets': 10, emb_dim: 8}, # Discretization
-                    {'name': 'b', 'dtype': 'category', 'emb_dim': 8, 'hash_buckets': 100}, # category feature with hash_buckets
-                    {'name': 'c', 'dtype': 'category', 'islist': True, 'emb_dim': 8}, # sequence feature
-                ]
-            target_cols: list of str, target columns
-            is_raw: bool, whether the input DataFrame is raw data without feature transforming
-            kwargs: mainly for feature transforming parameters when is_raw=True
-                n_jobs: int, number of parallel jobs
-                list_padding_value: int, padding value for list features
-                category_force_hash: bool, whether to force hash all category features
-                category_upper_lower_sensitive: bool, whether category features are upper/lower case sensitive
-                numerical_update_stats: bool, whether to update mean, std, min, max for numerical features
-                outliers_category: list, outliers for category features
-                outliers_numerical: list, outliers for numerical features
-        """
-        if not isinstance(inputs, list):
-            inputs = [inputs]
-
-        self.inputs = inputs
-        self.chunksize = chunksize
-
-        self.n_jobs = kwargs.get('n_jobs', 1) # os.cpu_count()
-
-        if is_raw:
-            assert 'is_train' in kwargs, 'is_train parameter should be provided when is_raw=True'
-            is_train = kwargs['is_train']
-            
-            self.transformer = FeatureTransformer(
-                feat_configs,
-                category_force_hash=kwargs.get('category_force_hash', False),
-                category_upper_lower_sensitive=kwargs.get('category_upper_lower_sensitive', True),
-                numerical_update_stats=kwargs.get('numerical_update_stats', False),
-                list_padding_value=kwargs.get('list_padding_value', -100),
-                outliers_category=kwargs.get('outliers_category', []),
-                outliers_numerical=kwargs.get('outliers_numerical', []),
-                verbose=kwargs.get('verbose', False)
-            )
-
-            if is_train == True:
-                # update feat_configs by go through all data
-                print('==> Start to update feat_configs (is_train=True) by going through all data...')
-                for df in self.read_inputs(inputs, chunksize=self.chunksize):
-                    self.transformer.transform(df, is_train=True, n_jobs=self.n_jobs)
-                print('==> Finished updating feat_configs (is_train=True) ...')
-
-            self.feat_configs = self.transformer.get_feat_configs()
-        else:
-            self.transformer = None
-            self.feat_configs = feat_configs
-
-        self.target_cols = target_cols
-    
-    def read_inputs(self, inputs: list, chunksize=None):
-        def read_pickle(path, chunksize):
-            try:
-                df = pd.read_pickle(path)
-            except:
-                import joblib
-                df = joblib.load(path)
-          
-            # for i in range(0, len(df), chunksize):
-            #     yield df.iloc[i:i+chunksize]
-            return [df]
-
-        for input in inputs:
-            if isinstance(input, pd.DataFrame):
-                reader = lambda input, chunksize: [input]
-            elif input.endswith('.h5') or input.endswith('.hdf5'):
-                reader = pd.read_hdf
-            elif input.endswith('.csv'):
-                reader = pd.read_csv
-            elif input.endswith('.pkl') or input.endswith('.pickle'):
-                reader = read_pickle
-            else:
-                raise ValueError(f'Unsupported input format: {input}')
-
-            for chunk in reader(input, chunksize):
-                yield chunk
-
-    def __iter__(self):
-        for df in self.read_inputs(self.inputs, chunksize=self.chunksize):
-            if self.transformer:
-                self.transformer.verbose = False
-                df = self.transformer.transform(df, is_train=False, n_jobs=self.n_jobs)
-            ds = DataFrameDataset(df, self.feat_configs, target_cols=self.target_cols, is_raw=False, verbose=False)
-            if hasattr(self, 'device'):
-                ds = ds.to(self.device)
-            yield from ds
+    return torch.utils.data.DataLoader(ds, collate_fn=ds.collate_fn, **kwargs)
