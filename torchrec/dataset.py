@@ -385,6 +385,7 @@ class DataFrameDataset(Dataset):
         verbose = kwargs.get('verbose', False)
 
         self.list_padding_value = kwargs.get('list_padding_value', None)
+        self.list_padding_maxlen = kwargs.get('list_padding_maxlen', None)
         
         if is_raw:
             assert 'is_train' in kwargs, 'is_train parameter should be provided when is_raw=True'
@@ -396,7 +397,7 @@ class DataFrameDataset(Dataset):
                 category_upper_lower_sensitive=kwargs.get('category_upper_lower_sensitive', True),
                 numerical_update_stats=kwargs.get('numerical_update_stats', False),
                 list_padding_value=self.list_padding_value,
-                list_padding_maxlen=kwargs.get('list_padding_maxlen', None),
+                list_padding_maxlen=self.list_padding_maxlen,
                 outliers_category=kwargs.get('outliers_category', []),
                 outliers_numerical=kwargs.get('outliers_numerical', []),
                 verbose=verbose
