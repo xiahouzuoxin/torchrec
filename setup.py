@@ -13,6 +13,9 @@ def find_version():
         return version_match.group(1)
     raise RuntimeError("Unable to find version string.")
 
+with open("requirements.txt", "r", encoding="utf-8") as rf:
+    requirements = [line.strip() for line in rf.readlines()]
+
 setup(
     name='torchrec',
     version=find_version(),
@@ -23,16 +26,7 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/xiahouzuoxin/torchrec",
     packages=find_packages(),
-    install_requires=[
-        # List your dependencies here
-        'numpy',
-        'pandas',
-        'scikit-learn',
-        'torch',
-        'uvicorn',
-        'fastapi',
-        'pydantic'
-    ],
+    install_requires=requirements,
     python_requires='>=3.10',
     classifiers=[
         'Programming Language :: Python :: 3',
