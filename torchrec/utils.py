@@ -60,3 +60,17 @@ def auto_generate_feature_configs(
         feat_configs.append(col_info)
     
     return feat_configs
+
+def pad_list(arr_list, padding_value, max_len=None):
+    '''
+    arr_list: list/array of np.array
+    '''
+    if max_len is None:
+        max_len = max([len(arr) for arr in arr_list])
+
+    for k, arr in enumerate(arr_list):
+        if len(arr) < max_len:
+            arr_list[k] = np.pad(arr, (0, max_len - len(arr)), 'constant', constant_values=padding_value)
+        else:
+            arr_list[k] = np.array(arr[:max_len])
+    return arr_list
