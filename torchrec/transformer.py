@@ -4,7 +4,7 @@ import pandas as pd
 import polars as pl
 from sklearn.utils import murmurhash3_32
 from joblib import Parallel, delayed
-from .utils import pad_list
+from .utils import pad_list, jsonify
 
 pd.options.mode.chained_assignment = None  # default='warn'
 pd.options.display.max_rows = 999
@@ -95,6 +95,9 @@ class FeatureTransformer:
                 df = df.with_columns(updated_s.alias(updated_f['name']))
             if is_train:
                 self.feat_configs[k] = updated_f
+
+        # make feat configs json serializable
+        self.feat_configs = jsonify(self.feat_configs)
 
         return df
     

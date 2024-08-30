@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import json
 
 def auto_generate_feature_configs(
         df: pd.DataFrame, 
@@ -74,3 +75,20 @@ def pad_list(arr_list, padding_value, max_len=None):
         else:
             arr_list[k] = np.array(arr[:max_len])
     return arr_list
+
+def jsonify(obj):
+    def encoder(obj):
+        if isinstance(obj, pd.Timestamp):
+            return str(obj)
+        elif isinstance(obj, pd.DataFrame):
+            return obj.to_dict(orient="records")
+        elif isinstance(obj, (np.integer, np.int64)):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif np.isnan(obj):
+            return None
+        raise TypeError(repr(obj) + " is not JSON serializable")
+    return json.loads(json.dumps(obj, default=encoder))
