@@ -5,4 +5,4 @@ from .utils import auto_generate_feature_configs
 
 from .embedding import DynamicEmbedding
 
-__version__ = "0.1.3-alpha"
+__version__ = "0.1.3a0"
